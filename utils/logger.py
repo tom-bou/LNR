@@ -17,12 +17,22 @@ _C.data_path = './data/cifar10'
 _C.num_classes = 100
 _C.imb_factor = 0.01
 _C.backbone = 'resnet32_fe'
+_C.backbone = 'resnet32'
+_C.hidden_sizes = [5, 10, 5] # For MLP
 _C.resume = ''
 _C.noisemodel = ''
 _C.uid = ''
 _C.head_class_idx = [0, 1]
 _C.med_class_idx = [0, 1]
 _C.tail_class_idx = [0, 1]
+
+_C.imb_type = 'exp'
+_C.loss_type = 'CE'
+_C.train_rule = 'None'
+_C.drw_epoch = 160
+_C.ldam_max_m = 0.5
+_C.ldam_s = 30
+_C.focal_gamma = 1.0
 
 _C.deterministic = True
 _C.gpu = 0
@@ -34,6 +44,7 @@ _C.multiprocessing_distributed = False
 _C.distributed = False
 
 _C.mode = None
+_C.optimizer = 'sgd'
 _C.smooth_tail = None
 _C.smooth_head = None
 _C.shift_bn = False

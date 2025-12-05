@@ -77,3 +77,48 @@ def calibration(true_labels, pred_labels, confidences, num_bins=15):
              "avg_confidence": avg_conf,
              "expected_calibration_error": ece,
              "max_calibration_error": mce }
+
+from sklearn.metrics import f1_score, roc_auc_score, confusion_matrix
+
+def f1_score_metric(true_labels, pred_labels, num_classes):
+    """Calculates macro-averaged F1 score."""
+    return f1_score(true_labels, pred_labels, average='macro')
+
+def g_mean_metric(true_labels, pred_labels, num_classes):
+    """Calculates Geometric Mean of sensitivity (recall) per class."""
+    cm = confusion_matrix(true_labels, pred_labels, labels=range(num_classes))
+    # Sensitivity per class: TP / (TP + FN)
+    # cm[i, i] is TP for class i
+    # sum(cm[i, :]) is TP + FN for class i (total actual positives for class i)
+    
+    sensitivities = []
+    for i in range(num_classes):
+        total_actual = np.sum(cm[i, :])
+        if total_actual > 0:
+            sensitivity = cm[i, i] / total_actual
+            sensitivities.append(sensitivity)
+        else:
+            # Handle case where a class is not present in true_labels
+            # This might happen in small batches or if test set is small
+            sensitivities.append(0.0) 
+            
+    # Geometric mean
+    if not sensitivities:
+        return 0.0
+    
+    g_mean = np.exp(np.mean(np.log(np.array(sensitivities) + 1e-10))) # Add epsilon to avoid log(0)
+    return g_mean
+
+def auc_metric(true_labels, pred_probs, num_classes):
+    """Calculates AUC score."""
+    try:
+        if num_classes == 2:
+            # Binary case: pred_probs should be probability of positive class
+            # Assuming class 1 is positive
+            return roc_auc_score(true_labels, pred_probs[:, 1])
+        else:
+            # Multi-class case: One-vs-Rest
+            return roc_auc_score(true_labels, pred_probs, multi_class='ovr', average='macro')
+    except ValueError:
+        # Handle cases where only one class is present in true_labels
+        return 0.0

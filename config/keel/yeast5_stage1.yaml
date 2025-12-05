@@ -1,0 +1,44 @@
+name: yeast5_stage1
+print_freq: 40
+workers: 4
+log_dir: 'logs'
+model_dir: 'ckps'
+
+# dataset & model setting
+dataset: 'yeast5'
+data_path: './data/keel'
+num_classes: 2
+backbone: 'mlp'
+hidden_sizes: [5, 10, 5]
+resume: ''
+
+# distributed training
+deterministic: True
+distributed: False
+gpu: 0
+world_size: -1
+rank: -1
+dist_url: 'tcp://224.66.41.62:23456'
+dist_backend: 'nccl'
+multiprocessing_distributed: False
+
+# Train
+mode: 'stage1'
+optimizer: 'adam'
+lr: 0.001
+batch_size: 32
+weight_decay: 0.0
+num_epochs: 100
+momentum: 0.9
+cos: False
+mixup: False
+alpha: 1.0
+
+# Loss configuration - Using Reweight to handle class imbalance
+loss_type: 'CE'
+train_rule: 'Reweight'  # Class reweighting to handle imbalance
+
+# Class indices for head/med/tail metrics (binary: 0=majority, 1=minority)
+head_class_idx: [0, 1]
+med_class_idx: [0, 0]
+tail_class_idx: [1, 2]

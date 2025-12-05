@@ -5,5 +5,5 @@ from __future__ import print_function
 from .logger import _C as config
 from .logger import update_config, create_logger
 
-from .metric import accuracy, calibration
+from .metric import accuracy, calibration, f1_score_metric, g_mean_metric, auc_metric
 from .meter import AverageMeter, ProgressMeter

@@ -42,7 +42,9 @@ Thumbs.db
 
 # Logs
 *.log
+# Allow requirements.txt but ignore other .txt files (like log files)
 *.txt
+!requirements.txt
 
 # Temporary files
 *.tmp

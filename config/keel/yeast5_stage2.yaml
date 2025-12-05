@@ -1,0 +1,40 @@
+name: yeast5_stage2
+uid: yeast5_stage2
+print_freq: 40
+workers: 4
+log_dir: 'logs'
+model_dir: 'ckps'
+
+# dataset & model setting
+dataset: 'yeast5'
+data_path: './data/keel'
+num_classes: 2
+backbone: 'mlp'
+hidden_sizes: [5, 10, 5]
+resume: '/home/tomboustedt/LNR/saved/yeast5_stage1_202511301220/ckps/model_best.pth.tar'
+noisemodel: ''
+
+# distributed training
+deterministic: True
+distributed: False
+gpu: 0
+world_size: -1
+rank: -1
+dist_url: 'tcp://224.66.41.62:23456'
+dist_backend: 'nccl'
+multiprocessing_distributed: False
+
+# Train
+mode: 'stage2'
+optimizer: 'adam'
+smooth_head: 0.3  # Standard smoothing for very high imbalance (ratio 50.61)
+smooth_tail: 0.0
+shift_bn: False
+lr_factor: 0.5
+lr: 0.0001  # Lower LR for fine-tuning
+batch_size: 32
+weight_decay: 0.0
+num_epochs: 100
+momentum: 0.9
+mixup: False
+alpha: null

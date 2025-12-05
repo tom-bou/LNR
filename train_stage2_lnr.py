@@ -23,14 +23,16 @@ from datasets.cifar100 import CIFAR100_LT
 from datasets.places import Places_LT
 from datasets.imagenet import ImageNet_LT
 from datasets.ina2018 import iNa2018
+from datasets.keel import KEEL_LT
 
 from models import resnet
 from models import resnet_places
 from models import resnet_cifar
+from models import mlp
 
 from utils import config, update_config, create_logger
 from utils import AverageMeter, ProgressMeter
-from utils import accuracy, calibration
+from utils import accuracy, calibration, f1_score_metric, g_mean_metric, auc_metric
 
 from methods import mixup_data, mixup_criterion
 from methods import LabelAwareSmoothing, LearnableWeightScaling
@@ -115,6 +117,34 @@ def main_worker(gpu, ngpus_per_node, config, logger, model_dir):
         dist.init_process_group(backend=config.dist_backend, init_method=config.dist_url,
                                 world_size=config.world_size, rank=config.rank)
 
+    # Data loading code (moved up for KEEL datasets to get input_dim)
+    dataset = None
+    if config.dataset == 'cifar10':
+        dataset = CIFAR10_LT(config.distributed, root=config.data_path, imb_type=config.imb_type, imb_factor=config.imb_factor,
+                             batch_size=config.batch_size, num_works=config.workers, config=config)
+
+    elif config.dataset == 'cifar100':
+        dataset = CIFAR100_LT(config.distributed, root=config.data_path, imb_type=config.imb_type, imb_factor=config.imb_factor,
+                              batch_size=config.batch_size, num_works=config.workers, config=config)
+
+    elif config.dataset == 'places':
+        dataset = Places_LT(config.distributed, root=config.data_path,
+                            batch_size=config.batch_size, num_works=config.workers)
+
+    elif config.dataset == 'imagenet':
+        dataset = ImageNet_LT(config.distributed, root=config.data_path,
+                              batch_size=config.batch_size, num_works=config.workers)
+
+    elif config.dataset == 'ina2018':
+        dataset = iNa2018(config.distributed, root=config.data_path,
+                          batch_size=config.batch_size, num_works=config.workers)
+
+    elif config.dataset in ['yeast1', 'yeast3', 'yeast4', 'yeast5', 'yeast6']:
+        dataset = KEEL_LT(config.distributed, root=config.data_path, dataset_name=config.dataset,
+                          batch_size=config.batch_size, num_works=config.workers)
+    
+    block = None # Initialize block for places dataset
+
     if config.dataset == 'cifar10' or config.dataset == 'cifar100':
         model = getattr(resnet_cifar, config.backbone)()
         classifier = getattr(resnet_cifar, 'Classifier')(feat_in=64, num_classes=config.num_classes)
@@ -128,6 +158,17 @@ def main_worker(gpu, ngpus_per_node, config, logger, model_dir):
         classifier = getattr(resnet_places, 'Classifier')(feat_in=2048, num_classes=config.num_classes)
         block = getattr(resnet_places, 'Bottleneck')(2048, 512, groups=1, base_width=64,
                                                      dilation=1, norm_layer=nn.BatchNorm2d)
+
+    elif config.dataset in ['yeast1', 'yeast3', 'yeast4', 'yeast5', 'yeast6']:
+        # For KEEL datasets, we use MLP
+        # We need to instantiate dataset first to get input dim
+        # Assuming dataset.train_instance is a DataLoader, we can get a sample to check shape
+        sample_batch = next(iter(dataset.train_instance))
+        input_dim = sample_batch[1].shape[1]
+        
+        full_model = mlp.MLP(num_inputs=input_dim, num_classes=config.num_classes, hidden_sizes=config.hidden_sizes)
+        model = full_model.features
+        classifier = full_model.classifier
 
     lws_model = LearnableWeightScaling(num_classes=config.num_classes)
 
@@ -194,7 +235,7 @@ def main_worker(gpu, ngpus_per_node, config, logger, model_dir):
                 loc = 'cuda:{}'.format(config.gpu)
                 checkpoint = torch.load(config.resume, map_location=loc)
             # config.start_epoch = checkpoint['epoch']
-            print(checkpoint.keys())
+            # print(checkpoint.keys())
             best_acc1 = checkpoint['best_acc1']
             its_ece = checkpoint['its_ece']
             if config.gpu is not None:
@@ -202,7 +243,10 @@ def main_worker(gpu, ngpus_per_node, config, logger, model_dir):
                 best_acc1 = best_acc1.to(config.gpu)
             model.load_state_dict(checkpoint['state_dict_model'])
             classifier.load_state_dict(checkpoint['state_dict_classifier'])
-            lws_model.load_state_dict(checkpoint['state_dict_lws_model'])
+            if 'state_dict_lws_model' in checkpoint:
+                lws_model.load_state_dict(checkpoint['state_dict_lws_model'])
+            else:
+                logger.info("=> no lws_model found in checkpoint, skipping")
             if config.dataset == 'places':
                 block.load_state_dict(checkpoint['state_dict_block'])
             logger.info("=> loaded checkpoint '{}' (epoch {})"
@@ -226,11 +270,11 @@ def main_worker(gpu, ngpus_per_node, config, logger, model_dir):
 
     # Data loading code
     if config.dataset == 'cifar10':
-        dataset = CIFAR10_LT(config.distributed, root=config.data_path, imb_factor=config.imb_factor,
+        dataset = CIFAR10_LT(config.distributed, root=config.data_path, imb_type=config.imb_type, imb_factor=config.imb_factor,
                              batch_size=config.batch_size, num_works=config.workers, config=config)
 
     elif config.dataset == 'cifar100':
-        dataset = CIFAR100_LT(config.distributed, root=config.data_path, imb_factor=config.imb_factor,
+        dataset = CIFAR100_LT(config.distributed, root=config.data_path, imb_type=config.imb_type, imb_factor=config.imb_factor,
                               batch_size=config.batch_size, num_works=config.workers, config=config)
 
     elif config.dataset == 'places':
@@ -245,6 +289,11 @@ def main_worker(gpu, ngpus_per_node, config, logger, model_dir):
         dataset = iNa2018(config.distributed, root=config.data_path,
                           batch_size=config.batch_size, num_works=config.workers)
 
+    elif config.dataset in ['yeast1', 'yeast3', 'yeast4', 'yeast5', 'yeast6']:
+        # KEEL dataset already loaded above for model creation - reuse it
+        # (don't reload to avoid different random splits)
+        pass
+
     train_loader = dataset.train_balance
     train_loader_all = dataset.train_balance
     val_loader = dataset.eval
@@ -258,13 +307,27 @@ def main_worker(gpu, ngpus_per_node, config, logger, model_dir):
     criterion = LabelAwareSmoothing(cls_num_list=cls_num_list, smooth_head=config.smooth_head,
                                     smooth_tail=config.smooth_tail).cuda(config.gpu)
 
-    optimizer = torch.optim.SGD([{"params": classifier.parameters()},
-                                {'params': lws_model.parameters()}], config.lr,
+    # For KEEL/MLP datasets, also train the feature extractor (not just classifier)
+    if config.dataset in ['yeast1', 'yeast3', 'yeast4', 'yeast5', 'yeast6']:
+        param_groups = [{"params": model.parameters()},
+                        {"params": classifier.parameters()},
+                        {'params': lws_model.parameters()}]
+    else:
+        param_groups = [{"params": classifier.parameters()},
+                        {'params': lws_model.parameters()}]
+    
+    optimizer = torch.optim.SGD(param_groups, config.lr,
                                 momentum=config.momentum,
                                 weight_decay=config.weight_decay)
+    if hasattr(config, 'optimizer') and config.optimizer == 'adam':
+        optimizer = torch.optim.Adam(param_groups, config.lr,
+                                    weight_decay=config.weight_decay)
     is_best = 1
     best_acc1 = 0
     bepoch = 0
+    model_n = None
+    classifier_n = None
+    lws_model_n = None
     for epoch in range(config.num_epochs):
         if config.distributed:
             train_sampler.set_epoch(epoch)
@@ -315,7 +378,7 @@ def label_noise_rebalance(train_dataloader,net,classifier, unique_id, args, thre
         return None
     if read:
         if os.path.exists('uid_'+str(unique_id)+'_noise_info_'+dataset_name+'.pkl'):
-            print('read')
+            # print('read')
             with open('uid_'+str(unique_id)+'_noise_info_'+dataset_name+'.pkl','rb') as j:
                 noise_info = pickle.load(j)
             return noise_info
@@ -425,6 +488,9 @@ def train_lnr(train_loader,train_loader_all, model, classifier, lws_model, crite
             block.train()
         else:
             block.eval()
+    elif config.dataset in ['yeast1', 'yeast3', 'yeast4', 'yeast5', 'yeast6']:
+        # For KEEL/MLP datasets, always train the full model
+        model.train()
     else:
         if config.shift_bn:
             model.train()
@@ -435,6 +501,8 @@ def train_lnr(train_loader,train_loader_all, model, classifier, lws_model, crite
     end = time.time()
     if config.num_classes == 10:
         thre = 7.5
+    elif config.num_classes == 2:
+        thre = 3.5  # Higher threshold = less flipping, better F1 preservation
     else:
         thre = 14.5
     if epoch == 0:
@@ -479,7 +547,7 @@ def train_lnr(train_loader,train_loader_all, model, classifier, lws_model, crite
             output = lws_model(output)
             loss = criterion(output, target)
         
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
+        acc1, acc5 = accuracy(output, target, topk=(1, 5)) if config.num_classes >= 5 else (accuracy(output, target, topk=(1,))[0], torch.tensor([0.0]).cuda())
         losses.update(loss.item(), images.size(0))
         top1.update(acc1[0], images.size(0))
         top5.update(acc5[0], images.size(0))
@@ -495,7 +563,7 @@ def train_lnr(train_loader,train_loader_all, model, classifier, lws_model, crite
 
         if i % config.print_freq == 0:
             progress.display(i, logger)
-    print('noise:', fflag)
+    # print('noise:', fflag)
 
 
 
@@ -523,7 +591,7 @@ def validate(val_loader, model, classifier, lws_model, criterion, config, logger
 
     with torch.no_grad():
         end = time.time()
-        for i, (images, target) in enumerate(val_loader):
+        for i, (_, images, target) in enumerate(val_loader):
             if config.gpu is not None:
                 images = images.cuda(config.gpu, non_blocking=True)
             if torch.cuda.is_available():
@@ -540,7 +608,7 @@ def validate(val_loader, model, classifier, lws_model, criterion, config, logger
             loss = criterion(output, target)
 
             # measure accuracy and record loss
-            acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            acc1, acc5 = accuracy(output, target, topk=(1, 5)) if config.num_classes >= 5 else (accuracy(output, target, topk=(1,))[0], torch.tensor([0.0]).cuda())
             losses.update(loss.item(), images.size(0))
             top1.update(acc1[0], images.size(0))
             top5.update(acc5[0], images.size(0))
@@ -557,25 +625,39 @@ def validate(val_loader, model, classifier, lws_model, criterion, config, logger
             pred_class = np.append(pred_class, pred_class_part.cpu().numpy())
             true_class = np.append(true_class, target.cpu().numpy())
             
+            # Accumulate probabilities for AUC
+            if i == 0:
+                all_probs = prob.cpu().numpy()
+            else:
+                all_probs = np.concatenate((all_probs, prob.cpu().numpy()), axis=0)
+            
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
 
             if i % config.print_freq == 0:
                 progress.display(i, logger)
-        cm = confusion_matrix(true_class, pred_class)
+        cal = calibration(true_class, pred_class, confidence)
+        
+        # Calculate new metrics
+        f1 = f1_score_metric(true_class, pred_class, config.num_classes)
+        g_mean = g_mean_metric(true_class, pred_class, config.num_classes)
+        auc = auc_metric(true_class, all_probs, config.num_classes)
+
         acc_classes = correct / class_num
         head_acc = acc_classes[config.head_class_idx[0]:config.head_class_idx[1]].mean() * 100
         med_acc = acc_classes[config.med_class_idx[0]:config.med_class_idx[1]].mean() * 100
         tail_acc = acc_classes[config.tail_class_idx[0]:config.tail_class_idx[1]].mean() * 100
 
-        logger.info('* Acc@1 {top1.avg:.3f}% Acc@5 {top5.avg:.3f}% HAcc {head_acc:.3f}% MAcc {med_acc:.3f}% TAcc {tail_acc:.3f}%.'.format(top1=top1, top5=top5, head_acc=head_acc, med_acc=med_acc, tail_acc=tail_acc))
+        logger.info(' * Acc@1 {top1.avg:.3f}% Acc@5 {top5.avg:.3f}% HAcc {head_acc:.3f}% MAcc {med_acc:.3f}% TAcc {tail_acc:.3f}%.'
+                    .format(top1=top1, top5=top5, head_acc=head_acc, med_acc=med_acc, tail_acc=tail_acc))
+        logger.info(' * ECE   {cal[expected_calibration_error]:.3f}%.'.format(cal=cal))
+        logger.info(' * F1 Score: {:.3f}'.format(f1))
+        logger.info(' * G-Mean: {:.3f}'.format(g_mean))
+        logger.info(' * AUC: {:.3f}'.format(auc))
+        logger.info(' * confusion matrix   : \n {}'.format(confusion_matrix(true_class, pred_class)))
 
-        cal = calibration(true_class, pred_class, confidence, num_bins=15)
-        logger.info('* ECE   {ece:.3f}%.'.format(ece=cal['expected_calibration_error'] * 100))
-        print('* confusion matrix   : ', cm.diagonal())
-        
-    return top1.avg, cal['expected_calibration_error'] * 100
+    return top1.avg, cal['expected_calibration_error']
 
 
 def save_checkpoint(state, is_best, model_dir):

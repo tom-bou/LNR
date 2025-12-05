@@ -26,9 +26,15 @@ def mixup_data(x, y, alpha=1.0, use_cuda=True):
 
 
 def mixup_criterion(criterion, pred, y_a, y_b, lam, n = None):
-    #print(n,y_a,y_b)
+    # Check if criterion is LabelAwareSmoothing (has the lam_y parameter)
+    is_label_aware = hasattr(criterion, '__class__') and criterion.__class__.__name__ == 'LabelAwareSmoothing'
+
+    # If no class distribution provided or not using LabelAwareSmoothing, use standard mixup
+    if n is None or not is_label_aware:
+        return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
+
+    # Class-aware mixup for imbalanced datasets (only for LabelAwareSmoothing)
     lam_y = []
-    loss = 0
     for i, v in enumerate(y_a):
         if (n[y_a[i]] / n[y_b[i]]) >= 3 and lam < 0.5:
             lam_y.append(0)
@@ -36,9 +42,10 @@ def mixup_criterion(criterion, pred, y_a, y_b, lam, n = None):
             lam_y.append(1)
         else:
             lam_y.append(lam)
-    lam_y = torch.tensor(np.array(lam_y)).cuda()
-    #print('mixing y with lam_y mean', torch.mean(lam_y))
-    return criterion(pred, y_a, lam_y) +  criterion(pred, y_b,(1-lam_y))
+
+    lam_y = torch.tensor(np.array(lam_y), device=pred.device)
+    loss = criterion(pred, y_a, lam_y) + criterion(pred, y_b, (1-lam_y))
+    return loss
 
 
 class LabelAwareSmoothing(nn.Module):
